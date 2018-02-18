@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <time.h>
 
+
 void execute(char **argv) {
     if (execvp(*argv, argv) < 0) {
         perror("Could not execute command");
@@ -30,13 +31,24 @@ int main()
     ignore_action.sa_handler = SIG_IGN;
     sigaction(SIGINT, &ignore_action, NULL);
 
+    // get shell pid and convert to string;
+	int pid = getpid();
+	char sPid[6];
+	sprintf(sPid, "%d", pid);
+
     char *userArgs[512];
     char cwd[2048];
+    pid_t childPid;
 
     char *input = NULL;
     int charsEntered, i, childExitMethod, exitStatus, termSignal, redirResult,
     sourceFD, targetFD;
 
+    pid_t openJobs[25];
+    for (i = 0; i < 25; ++i) {
+        openJobs[i] = -5;
+    }
+    int numOpen = 0;
     // redirection command locations in userArgs[]
     int outIndex, inIndex, backIndex, lastIndex, curIndex; 
 
@@ -47,9 +59,22 @@ int main()
     // run shell
     while (1) {
 
+        // check for waiting children
+        if (numOpen > 0) {
+            for (i = 0; i < numOpen; ++i) {
+                childPid = waitpid(openJobs[i], &childExitMethod, WNOHANG);
+                if (childPid != 0) {
+                    printf("Background child process %d returned\n", childPid);
+                    openJobs[i] = openJobs[numOpen -1];
+                    openJobs[numOpen -1] = -5;
+                    numOpen--;
+                }
+            }
+        }
+
         // get user command
-        printf(":");
         fflush(stdout);
+        printf(":");
         charsEntered = getline(&input, &buffersize, stdin);
 
         // remove line feed
@@ -65,20 +90,21 @@ int main()
             while (userArgs[i-1] != NULL) {
                 userArgs[i] = strtok(NULL, " ");
 
-                // look for <, >, & and store index
+                // look for <, >, & and store index or $$ and expand
                 if (userArgs[i] != NULL) {
                     if (strcmp(userArgs[i], "<") == 0) {
                         inIndex = i;
-                      //  printf("inIndex = %d\n", inIndex);
                     } else if (strcmp(userArgs[i], ">") == 0) {
                         outIndex = i;
-                     //   printf("outIndex = %d\n", outIndex);
                     } else if (strcmp(userArgs[i], "&") == 0) {
                         backIndex = i;
+                    } else if (strcmp(userArgs[i], "$$") == 0) {
+                        userArgs[i] = NULL;
+                        userArgs[i] = sPid;
                     }
 
                     // keep track of last arg
-                    lastIndex = i+1;
+                    lastIndex = i + 1;
                     //printf("lastIndex = %d\n", lastIndex);
 
                 }
@@ -198,11 +224,63 @@ int main()
                                 lastIndex -= 2;
                             }
                         }
-                        
+
+                        // redirect to background to dev/null if unspecified
+                        // help from stackoverflow #14846768
+                        if (backIndex == lastIndex - 1 && inIndex == 0 && outIndex == 0) {
+                            sourceFD = open("/dev/null", O_RDONLY);
+                            if (sourceFD == -1) {
+                                perror("source /dev/null open()"); 
+                                exit(1); 
+                            }
+                            redirResult = dup2(sourceFD, 0);
+                            if (redirResult == -1) {
+                                perror("source /dev/null dup2()");
+                                exit(2);
+                            }
+                            targetFD = open("/dev/null", O_WRONLY);
+                            if (targetFD == -1) {
+                                perror("target /dev/null open()"); 
+                                exit(1); 
+                            }
+                            redirResult = dup2(targetFD, 0);
+                            if (redirResult == -1) {
+                                perror("target /dev/null dup2()");
+                                exit(2);
+                            }
+                        }
+                        // remove & from userArgs[]
+                        if (backIndex != 0) {
+                            userArgs[backIndex] = NULL;
+                            userArgs[backIndex + 1] = NULL;
+                            stopLoop = 10;
+                            if (backIndex + 1 != lastIndex && stopLoop != 0) {
+                                curIndex = backIndex;
+                                while (curIndex + 1 != lastIndex) {
+                                    userArgs[curIndex] = userArgs[curIndex + 1];
+                                    userArgs[curIndex + 1] = NULL;
+                                    curIndex++;
+                                    stopLoop--;
+                                }
+                                lastIndex -= 1;
+                            }
+                        }
+
                         execute(userArgs);
                         break;
                     default:
-                        waitpid(spawnpid, &childExitMethod, 0);
+                        printf("Child %d beginning\n", spawnpid);
+
+                        // check for &, run in background
+                        if (backIndex < lastIndex -1) {
+                            childPid = waitpid(spawnpid, &childExitMethod, 0);
+                            printf("Foreground child %d returned\n", spawnpid);
+
+                        } else {
+                            openJobs[numOpen] = spawnpid;
+                            ++numOpen;
+                        }
+                            
                         break;
                 }
             }
