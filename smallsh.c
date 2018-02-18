@@ -23,10 +23,10 @@ void execute(char **argv) {
         exit(1);
     }
 }
-  
+
 int main()
 {
-    // catch SIGINT and ignore for shell
+    // catch SIGINT and ignore for shell and background processes
     struct sigaction ignore_action = {0};
     ignore_action.sa_handler = SIG_IGN;
     sigaction(SIGINT, &ignore_action, NULL);
@@ -64,7 +64,13 @@ int main()
             for (i = 0; i < numOpen; ++i) {
                 childPid = waitpid(openJobs[i], &childExitMethod, WNOHANG);
                 if (childPid != 0) {
-                    printf("Background child process %d returned\n", childPid);
+                    
+                    //check exit status
+                    if (WIFEXITED(childExitMethod) != 0) {
+                        exitStatus = WEXITSTATUS(childExitMethod);    
+                    }
+                    printf("Background process %d returned with exit "
+                    "status %d\n", childPid, exitStatus);
                     openJobs[i] = openJobs[numOpen -1];
                     openJobs[numOpen -1] = -5;
                     numOpen--;
@@ -264,19 +270,29 @@ int main()
                                 }
                                 lastIndex -= 1;
                             }
-                        }
-
+                        } 
+                        // set foreground process SIGINT to default
+                        if (backIndex == 0) {
+                            struct sigaction SIGINT_action = {0};
+                            SIGINT_action.sa_handler = SIG_DFL;
+                            sigaction(SIGINT, &SIGINT_action, NULL);
+                        }    
                         execute(userArgs);
+                        
                         break;
                     default:
-                        printf("Child %d beginning\n", spawnpid);
 
                         // check for &, run in background
                         if (backIndex < lastIndex -1) {
                             childPid = waitpid(spawnpid, &childExitMethod, 0);
-                            printf("Foreground child %d returned\n", spawnpid);
-
+                            if (WIFSIGNALED(childExitMethod) != 0) {
+                                termSignal = WTERMSIG(childExitMethod);
+                                printf("Foreground process %d terminated"
+                                " by signal %d\n", childPid, termSignal);
+                            }
                         } else {
+
+                            printf("Background process %d beginning\n", spawnpid);
                             openJobs[numOpen] = spawnpid;
                             ++numOpen;
                         }
