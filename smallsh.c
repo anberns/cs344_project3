@@ -59,6 +59,7 @@ int main()
 	sprintf(sPid, "%d", pid);
 
     char *userArgs[512];
+    char subStr[200];
     char cwd[2048];
     pid_t childPid;
 
@@ -136,9 +137,12 @@ int main()
                         outIndex = i;
                     } else if (strcmp(userArgs[i], "&") == 0) {
                         backIndex = i;
-                    } else if (strcmp(userArgs[i], "$$") == 0) {
-                        userArgs[i] = NULL;
-                        userArgs[i] = sPid;
+                    } else if (strstr(userArgs[i], "$$") != NULL) {
+                        memset(&subStr, '\0', sizeof(subStr));
+                        strcpy(subStr, userArgs[i]);
+                        subStr[strlen(subStr) - 2] = '\0';                        
+                        strcat(subStr, sPid);
+                        userArgs[i] = subStr;
                     }
 
                     // keep track of last arg
@@ -185,8 +189,8 @@ int main()
                 else {
                     chdir(userArgs[1]);
                 }
-                getcwd(cwd, sizeof(cwd));
-                printf("%s\n", cwd);
+                //getcwd(cwd, sizeof(cwd));
+                //printf("%s\n", cwd);
             }
 
             // pass other commands
