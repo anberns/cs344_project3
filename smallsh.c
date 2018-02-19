@@ -16,11 +16,26 @@
 #include <pthread.h>
 #include <time.h>
 
+// global variable type from "The GNU C Library"
+volatile sig_atomic_t modeFlag = 0;
 
 void execute(char **argv) {
     if (execvp(*argv, argv) < 0) {
         perror("Could not execute command");
         exit(1);
+    }
+}
+
+void catchSIGTSTP(int signo) {
+    
+    char *altMessage = "\nEntering foreground-only mode (& is now ignored)\n:";
+    char *normMessage = "\nExiting foreground-only mode\n:";
+    if (modeFlag == 0) {
+        write(STDOUT_FILENO, altMessage, 51);
+        modeFlag = 1;
+    } else {
+        write(STDOUT_FILENO, normMessage, 32);
+        modeFlag = 0;
     }
 }
 
@@ -30,6 +45,13 @@ int main()
     struct sigaction ignore_action = {0};
     ignore_action.sa_handler = SIG_IGN;
     sigaction(SIGINT, &ignore_action, NULL);
+
+    // catch SIGTSTP and handle
+    struct sigaction SIGTSTP_action = {0};
+    SIGTSTP_action.sa_handler = catchSIGTSTP;
+    sigfillset(&SIGTSTP_action.sa_mask);
+    SIGTSTP_action.sa_flags = SA_RESTART;
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
     // get shell pid and convert to string;
 	int pid = getpid();
@@ -68,9 +90,18 @@ int main()
                     //check exit status
                     if (WIFEXITED(childExitMethod) != 0) {
                         exitStatus = WEXITSTATUS(childExitMethod);    
+                        printf("background pid %d is done: exit "
+                        "value %d\n", childPid, exitStatus);
                     }
-                    printf("Background process %d returned with exit "
-                    "status %d\n", childPid, exitStatus);
+                    else if (WIFSIGNALED(childExitMethod) != 0) {
+                        termSignal = WTERMSIG(childExitMethod);
+                        printf("background pid %d is done: terminated" 
+                        " by signal %d\n", childPid, termSignal);
+                    }
+                    else {
+                        printf("background pid %d is done: exit "
+                        "value 0\n", childPid);
+                    }
                     openJobs[i] = openJobs[numOpen -1];
                     openJobs[numOpen -1] = -5;
                     numOpen--;
@@ -90,7 +121,8 @@ int main()
         if (input[0] != '#' && strcmp(input, "") != 0) {
 
             // parse for command and possible args
-            outIndex = inIndex = backIndex = 0;
+            outIndex = inIndex = 0;
+            backIndex = 0;
             i = 1;
             userArgs[0] = strtok(input, " ");
             while (userArgs[i-1] != NULL) {
@@ -137,11 +169,11 @@ int main()
                 //check exit status
                 if (WIFEXITED(childExitMethod) != 0) {
                     exitStatus = WEXITSTATUS(childExitMethod);    
-                    printf("Exit status %d\n", exitStatus);
+                    printf("exit value %d\n", exitStatus);
                 }
                 else if (WIFSIGNALED(childExitMethod) != 0) {
                     termSignal = WTERMSIG(childExitMethod);
-                    printf("Terminating signal %d\n", termSignal);
+                    printf("terminated by signal %d\n", termSignal);
                 }
             }
 
@@ -178,7 +210,7 @@ int main()
                             targetFD = open(userArgs[outIndex + 1], O_WRONLY |
                             O_CREAT | O_TRUNC, 0644);
                             if (targetFD == -1) {
-                                perror("target open()"); 
+                                perror("cannot open for output\n"); 
                                 exit(1); 
                             }
                             redirResult = dup2(targetFD, 1);
@@ -206,7 +238,7 @@ int main()
                         if (inIndex != 0) {
                             sourceFD= open(userArgs[inIndex + 1], O_RDONLY);
                             if (sourceFD == -1) {
-                                perror("source open()"); 
+                                perror("cannot open for input\n"); 
                                 exit(1); 
                             }
                             redirResult = dup2(sourceFD, 0);
@@ -233,7 +265,9 @@ int main()
 
                         // redirect to background to dev/null if unspecified
                         // help from stackoverflow #14846768
-                        if (backIndex == lastIndex - 1 && inIndex == 0 && outIndex == 0) {
+                        if (modeFlag == 0 &&backIndex != 0 && 
+                        backIndex == lastIndex - 1 && 
+                        inIndex == 0 && outIndex == 0) {
                             sourceFD = open("/dev/null", O_RDONLY);
                             if (sourceFD == -1) {
                                 perror("source /dev/null open()"); 
@@ -272,7 +306,7 @@ int main()
                             }
                         } 
                         // set foreground process SIGINT to default
-                        if (backIndex == 0) {
+                        if (backIndex == 0 || modeFlag == 1) {
                             struct sigaction SIGINT_action = {0};
                             SIGINT_action.sa_handler = SIG_DFL;
                             sigaction(SIGINT, &SIGINT_action, NULL);
@@ -283,18 +317,20 @@ int main()
                     default:
 
                         // check for &, run in background
-                        if (backIndex < lastIndex -1) {
+                        if (modeFlag == 0 && backIndex != 0 && 
+                        backIndex == lastIndex -1) {
+                            printf("background pid is %d\n", spawnpid);
+                            openJobs[numOpen] = spawnpid;
+                            ++numOpen;
+                        } else {
+
+                            // run in foreground
                             childPid = waitpid(spawnpid, &childExitMethod, 0);
                             if (WIFSIGNALED(childExitMethod) != 0) {
                                 termSignal = WTERMSIG(childExitMethod);
-                                printf("Foreground process %d terminated"
-                                " by signal %d\n", childPid, termSignal);
+                                printf("terminated by signal %d\n", termSignal);
                             }
-                        } else {
-
-                            printf("Background process %d beginning\n", spawnpid);
-                            openJobs[numOpen] = spawnpid;
-                            ++numOpen;
+                            
                         }
                             
                         break;
